@@ -517,26 +517,6 @@ static Move UciToMove(char* s, int flip) {
 	return m;
 }
 
-/*static inline int Center(int rank, int file) {
-	return -abs(rank * 2 - 7) / 2 - abs(file * 2 - 7) / 2;
-}
-
-static int CenterSq(int sq) {
-	int rank = sq / 8;
-	int file = sq % 8;
-	return Center(rank, file);
-}
-
-static int EvalMove(Position* pos, Move* bst, Move* m) {
-	int score = CenterSq(m->to) - CenterSq(m->from);
-	int ptDes = PieceTypeOn(pos, m->to);
-	if ((m->from == bst->from) && (m->to == bst->to))
-		score += 10000;
-	if (ptDes != PT_NB)
-		score += 10 * material[ptDes] - material[PieceTypeOn(pos, m->from)];
-	return score;
-}*/
-
 static int EvalPosition(Position* pos) {
 	int score = 0;
 	U64 bbBlockers = pos->color[0] | pos->color[1];
@@ -622,7 +602,6 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 	if (tt_entry->key == tt_key) {
 		tt_move = tt_entry->move;
 		if (alpha == beta - 1 && tt_entry->depth >= depth) {
-		//if (tt_entry->depth >= depth) {
 			if (tt_entry->flag == EXACT)
 				return tt_entry->score;
 			if (tt_entry->flag == LOWER && tt_entry->score <= alpha)
@@ -631,7 +610,6 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 				return tt_entry->score;
 		}
 	}
-	// Internal iterative reduction
 	else
 		depth -= depth > 3;
 	const S32 improving = ply > 1 && static_eval > stack[ply - 2].score;
@@ -648,20 +626,14 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 	hash_history[hash_count++] = tt_key;
 	const int num_moves = MoveGen(pos, moves, in_qsearch);
 	S64 move_scores[256];
-	//for (int n = 0; n < num_moves; n++)move_scores[n] = EvalMove(pos, &stack[ply].move, &moves[n]);
 	for (int j = 0; j < num_moves; ++j) {
 		const int capture = PieceTypeOn(pos, moves[j].to);
-		if (Equal(moves[j], tt_move)){
-	
+		if (Equal(moves[j], tt_move))
 				move_scores[j] = 1LL << 62;
-			//printf("Killer move: %s %s\n", MoveToUci(moves[j], pos->flipped), MoveToUci(tt_move, pos->flipped));
-		}
 	else if (capture != PT_NB)
 			move_scores[j] = ((capture + 1) * (1LL << 54)) - PieceTypeOn(pos, moves[j].from);
-		else if (Equal(moves[j], stack[ply].killer)) {
+		else if (Equal(moves[j], stack[ply].killer))
 			move_scores[j] = 1LL << 50;
-			//printf("Killer move: %s %s\n", MoveToUci(moves[j], pos->flipped), MoveToUci(stack[ply].killer, pos->flipped));
-		}
 		else
 			move_scores[j] = hh_table[pos->flipped][moves[j].from][moves[j].to];
 	}
@@ -681,7 +653,6 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 		Position npos = *pos;
 		if (!MakeMove(&npos, &move))
 			continue;
-		//int score = -SearchAlpha(&npos, -beta, -alpha, depth - 1, ply + 1, stack);
 		S32 score;
 		S32 reduction = depth > 3 && num_moves_evaluated > 1
 			? max(num_moves_evaluated / 13 + depth / 14 + (alpha == beta - 1) + !improving -
@@ -751,11 +722,13 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 	hash_count--;
 	if (best_score == -INF)
 		return in_qsearch ? alpha : in_check ? ply - MATE : 0;
-	tt_entry->key = tt_key;
-	tt_entry->move = best_move;
-	tt_entry->depth = depth;
-	tt_entry->score = best_score;
-	tt_entry->flag = tt_flag;
+	else {
+		tt_entry->key = tt_key;
+		tt_entry->move = best_move;
+		tt_entry->depth = depth;
+		tt_entry->score = best_score;
+		tt_entry->flag = tt_flag;
+	}
 	return alpha;
 }
 
@@ -855,8 +828,10 @@ static void UciCommand(char* line) {
 		ParseGo(line + 2);
 	else if (!strncmp(line, "position", 8))
 		ParsePosition(line + 8);
-	else if (!strncmp(line, "print", 5))PrintBoard(&pos);
-	else if (!strncmp(line, "exit", 4))exit(0);
+	else if (!strncmp(line, "print", 5))
+		PrintBoard(&pos);
+	else if (!strncmp(line, "exit", 4))
+		exit(0);
 }
 
 static void UciLoop() {
