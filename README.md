@@ -4,7 +4,7 @@
 <img src="/Resources/Frog.png" />
     <br>
     <br>
-    <b><i>Uci chess engine 2000 elo.</i></b>
+    <b><i>Uci chess engine 2050 elo.</i></b>
     <br>
     <br>
     <img src="https://img.shields.io/github/downloads/Thibor/Frog/total?color=critical&style=for-the-badge">

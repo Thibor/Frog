@@ -1,10 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>  
+#include <windows.h>
 
-#define MATE 30000
+#define MATE 31000
 #define INF 32000
-#define MAX_DEPTH 128
+#define MAX_PLY 128
 #define U8 unsigned __int8
 #define U16 unsigned __int16
 #define S32 signed __int32
@@ -52,10 +54,11 @@ typedef struct {
 }TT_Entry;
 
 typedef struct {
+	int post;
 	int stop;
 	int depthLimit;
-	S64 timeStart;
-	S64 timeLimit;
+	U64 timeStart;
+	U64 timeLimit;
 	U64 nodes;
 	U64 nodesLimit;
 }SSearchInfo;
@@ -88,8 +91,8 @@ Stack stack[128];
 U64 keys[848];
 int hash_count = 0;
 U64 hash_history[1024] = { 0 };
-S32 hh_table[2][2][64][64]={0};
-TT_Entry tt[64ULL << 15] = {0};
+S32 hh_table[2][2][64][64] = { 0 };
+TT_Entry tt[64ULL << 15] = { 0 };
 
 static U64 GetTimeMs() {
 	return GetTickCount64();
@@ -259,9 +262,40 @@ static void PrintBoard(Position* pos) {
 	printf("castling : %10s\n", castling);
 }
 
+int InputAvailable(void) {
+	static int init = 0, pipe;
+	static HANDLE inh;
+	DWORD dw;
+
+	if (!init) {
+		init = 1;
+		inh = GetStdHandle(STD_INPUT_HANDLE);
+		pipe = !GetConsoleMode(inh, &dw);
+		if (!pipe) {
+			SetConsoleMode(inh, dw & ~(ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT));
+			FlushConsoleInputBuffer(inh);
+		}
+	}
+	if (pipe) {
+		if (!PeekNamedPipe(inh, NULL, 0, NULL, &dw, NULL))
+			return 1;
+		return dw > 0;
+	}
+	else {
+		GetNumberOfConsoleInputEvents(inh, &dw);
+		return dw > 1;
+	}
+}
+
 static void CheckUp() {
 	if ((info.timeLimit && GetTimeMs() - info.timeStart > info.timeLimit) || (info.nodesLimit && info.nodes > info.nodesLimit))
 		info.stop = 1;
+	if (InputAvailable()) {
+		char line[4000];
+		fgets(line, sizeof(line), stdin);
+		if (!strncmp(line, "stop", 4))
+			info.stop = 1;
+	}
 }
 
 static U64 Attacked(Position* pos, int sq, int them) {
@@ -341,7 +375,7 @@ static int MoveGen(const Position* pos, Move* const movelist, int only_captures)
 }
 
 static int IsRepetition(U64 hash) {
-	for (int n = hash_count - 2; n >= 0; n -= 2)
+	for (int n = hash_count - 4; n >= 0; n -= 2)
 		if (hash_history[n] == hash)
 			return 1;
 	return 0;
@@ -554,7 +588,7 @@ static int Equal(const Move lhs, const Move rhs) {
 
 static int IsPseudolegalMove(const Position* pos, const Move move) {
 	Move moves[256];
-	const int num_moves = MoveGen(pos, moves,0);
+	const int num_moves = MoveGen(pos, moves, 0);
 	for (int i = 0; i < num_moves; ++i)
 		if (moves[i].from == move.from && moves[i].to == move.to)
 			return 1;
@@ -565,9 +599,9 @@ static void PrintPv(const Position* pos, const Move move) {
 	if (!IsPseudolegalMove(pos, move))
 		return;
 	const Position npos = *pos;
-	if (!MakeMove(&npos,&move))
+	if (!MakeMove(&npos, &move))
 		return;
-	printf(" %s",MoveToUci(move, pos->flipped));
+	printf(" %s", MoveToUci(move, pos->flipped));
 	const U64 tt_key = GetHash(&npos);
 	TT_Entry* tt_entry = tt + (tt_key % tt_count);
 	if (tt_entry->key != tt_key || (!tt_entry->move.from && !tt_entry->move.to) || tt_entry->flag != EXACT)
@@ -579,16 +613,25 @@ static void PrintPv(const Position* pos, const Move move) {
 	hash_count--;
 }
 
+static int Permill() {
+	int pm = 0;
+	for (int n = 0; n < 1000; n++) {
+		if (tt[n].key)
+			pm++;
+	}
+	return pm;
+}
+
 static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, Stack* stack) {
 	if (!(++info.nodes & 0xffff))
 		CheckUp();
 	if (info.stop)
 		return 0;
 	const int static_eval = EvalPosition(pos);
-	if (ply > 127)
+	if (ply >= MAX_PLY)
 		return static_eval;
 	stack[ply].score = static_eval;
-	const auto in_check = Attacked(pos, (int)LSB(pos->color[0] & pos->pieces[KING]), 1);
+	const U64 in_check = Attacked(pos, (int)LSB(pos->color[0] & pos->pieces[KING]), 1);
 	if (in_check)
 		depth = max(1, depth + 1);
 	int in_qsearch = depth <= 0;
@@ -597,8 +640,8 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 		if (IsRepetition(tt_key))
 			return 0;
 	// TT Probing
-	TT_Entry* tt_entry = tt +(tt_key % tt_count);
-	Move tt_move={0};
+	TT_Entry* tt_entry = tt + (tt_key % tt_count);
+	Move tt_move = { 0 };
 	if (tt_entry->key == tt_key) {
 		tt_move = tt_entry->move;
 		if (alpha == beta - 1 && tt_entry->depth >= depth) {
@@ -629,8 +672,8 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 	for (int j = 0; j < num_moves; ++j) {
 		const int capture = PieceTypeOn(pos, moves[j].to);
 		if (Equal(moves[j], tt_move))
-				move_scores[j] = 1LL << 62;
-	else if (capture != PT_NB)
+			move_scores[j] = 1LL << 62;
+		else if (capture != PT_NB)
 			move_scores[j] = ((capture + 1) * (1LL << 54)) - PieceTypeOn(pos, moves[j].from);
 		else if (Equal(moves[j], stack[ply].killer))
 			move_scores[j] = 1LL << 50;
@@ -688,15 +731,16 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 				alpha = score;
 				tt_flag = EXACT;
 				stack[ply].move = move;
-				if (!ply)
+				if (!ply && info.post)
 				{
 					printf("info depth %d score ", depth);
-					if (abs(score) < MATE - MAX_DEPTH)
+					if (abs(score) < MATE - MAX_PLY)
 						printf("cp %d", score);
 					else
 						printf("mate %d", (score > 0 ? (MATE - score + 1) >> 1 : -(MATE + score) >> 1));
 					printf(" time %lld", GetTimeMs() - info.timeStart);
-					printf(" nodes %lld pv", info.nodes);
+					printf(" nodes %lld", info.nodes);
+					printf(" hashfull %d pv",Permill());
 					PrintPv(pos, stack[0].move);
 					printf("\n");
 				}
@@ -741,9 +785,97 @@ static void SearchIteratively(Position* pos) {
 			break;
 		}
 	}
-	char* uci = MoveToUci(stack[0].move, pos->flipped);
-	printf("bestmove %s\n", uci);
-	fflush(stdout);
+	if (info.post) {
+		char* uci = MoveToUci(stack[0].move, pos->flipped);
+		printf("bestmove %s\n", uci);
+		fflush(stdout);
+	}
+}
+
+static inline void PerftDriver(Position* pos, int depth) {
+	Move moves[256];
+	const int num_moves = MoveGen(pos, moves, 0);
+	for (int n = 0; n < num_moves; n++){
+		Position npos = *pos;
+		if (!MakeMove(&npos, &moves[n]))
+			continue;
+		if (depth)
+			PerftDriver(&npos, depth - 1);
+		else
+			info.nodes++;
+	}
+}
+
+static int ShrinkNumber(U64 n) {
+	if (n < 1000)
+		return 0;
+	if (n < 1000000)
+		return 1;
+	if (n < 1000000000)
+		return 2;
+	return 3;
+}
+
+static void PrintSummary(U64 time, U64 nodes) {
+	U64 nps = (nodes * 1000) / max(time, 1);
+	const char* units[] = { "", "k", "m", "g" };
+	int sn = ShrinkNumber(nps);
+	int p = pow(10, sn * 3);
+	int b = pow(10, 3);
+	printf("-----------------------------\n");
+	printf("Time        : %llu\n", time);
+	printf("Nodes       : %llu\n", nodes);
+	printf("Nps         : %llu (%llu%s/s)\n", nps, nps / p, units[sn]);
+	printf("-----------------------------\n");
+}
+
+void ResetInfo() {
+	info.timeStart = GetTimeMs();
+	info.timeLimit = 0;
+	info.depthLimit = MAX_PLY;
+	info.nodesLimit = 0;
+	info.nodes = 0;
+	info.stop = FALSE;
+	info.post = TRUE;
+}
+
+void PrintPerformanceHeader() {
+	printf("-----------------------------\n");
+	printf("ply      time        nodes\n");
+	printf("-----------------------------\n");
+}
+
+//performance test
+static inline void UciPerformance() {
+	ResetInfo();
+	PrintPerformanceHeader();
+	SetFen(&pos, START_FEN);
+	info.depthLimit = 0;
+	U64 elapsed = 0;
+	while (elapsed < 3000) {
+		PerftDriver(&pos, info.depthLimit++);
+		elapsed = GetTimeMs() - info.timeStart;
+		printf(" %2llu. %8llu %12llu\n", info.depthLimit, elapsed, info.nodes);
+	}
+	PrintSummary(elapsed, info.nodes);
+}
+
+//start benchmark
+static void UciBench() {
+	ResetInfo();
+	PrintPerformanceHeader();
+	SetFen(&pos, START_FEN);
+	info.depthLimit = 0;
+	info.post = FALSE;
+	U64 elapsed = 0;
+	while (elapsed < 3000)
+	{
+		++info.depthLimit;
+		SearchIteratively(&pos);
+		elapsed = GetTimeMs() - info.timeStart;
+		printf(" %2d. %8llu %12llu\n", info.depthLimit, elapsed, info.nodes);
+	}
+	PrintSummary(elapsed, info.nodes);
 }
 
 static void ParsePosition(char* ptr) {
@@ -778,12 +910,7 @@ static void ParsePosition(char* ptr) {
 }
 
 static void ParseGo(char* command) {
-	info.stop = FALSE;
-	info.nodes = 0;
-	info.depthLimit = 64;
-	info.nodesLimit = 0;
-	info.timeLimit = 0;
-	info.timeStart = GetTimeMs();
+	ResetInfo();
 	int wtime = 0;
 	int btime = 0;
 	int winc = 0;
@@ -830,6 +957,10 @@ static void UciCommand(char* line) {
 		ParsePosition(line + 8);
 	else if (!strncmp(line, "print", 5))
 		PrintBoard(&pos);
+	else if (!strncmp(line, "perft", 5))
+		UciPerformance();
+	else if (!strncmp(line, "bench", 5))
+		UciBench();
 	else if (!strncmp(line, "exit", 4))
 		exit(0);
 }
