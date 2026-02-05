@@ -807,11 +807,11 @@ static inline void PerftDriver(Position* pos, int depth) {
 }
 
 static int ShrinkNumber(U64 n) {
-	if (n < 1000)
+	if (n < 10000)
 		return 0;
-	if (n < 1000000)
+	if (n < 10000000)
 		return 1;
-	if (n < 1000000000)
+	if (n < 10000000000)
 		return 2;
 	return 3;
 }
