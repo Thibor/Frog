@@ -2,7 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>  
+
+#if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
+#endif
 
 #define MATE 31000
 #define INF 32000
@@ -23,11 +26,11 @@ enum PieceType { PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, PT_NB };
 enum Bound { UPPER, LOWER, EXACT };
 
 typedef struct {
+	int flipped;
 	U64 castling[4];
 	U64 color[2];
 	U64 pieces[6];
 	U64 ep;
-	int flipped;
 }Position;
 
 Position pos;
@@ -93,6 +96,8 @@ int hash_count = 0;
 U64 hash_history[1024] = { 0 };
 S32 hh_table[2][2][64][64] = { 0 };
 TT_Entry tt[64ULL << 15] = { 0 };
+
+void UciCommand(char* line);
 
 static U64 GetTimeMs() {
 	return GetTickCount64();
@@ -287,15 +292,14 @@ int InputAvailable(void) {
 	}
 }
 
-static void CheckUp() {
-	if ((info.timeLimit && GetTimeMs() - info.timeStart > info.timeLimit) || (info.nodesLimit && info.nodes > info.nodesLimit))
-		info.stop = 1;
-	if (InputAvailable()) {
-		char line[4000];
-		fgets(line, sizeof(line), stdin);
-		if (!strncmp(line, "stop", 4))
-			info.stop = 1;
+static int CheckUp() {
+	if ((++info.nodes & 0xffff) == 0) {
+		if (info.timeLimit && GetTimeMs() - info.timeStart > info.timeLimit)
+			info.stop = TRUE;
+		if (info.nodesLimit && info.nodes > info.nodesLimit)
+			info.stop = TRUE;
 	}
+	return info.stop;
 }
 
 static U64 Attacked(Position* pos, int sq, int them) {
@@ -333,7 +337,7 @@ static void generate_pawn_moves(Move* const movelist, int* num_moves, U64 to_mas
 	}
 }
 
-static void generate_piece_moves(Move* const movelist, int* num_moves, const Position* pos, const int piece, const U64 to_mask, U64(*func)(int, U64)) {
+static void GeneratePieceMoves(Move* const movelist, int* num_moves, const Position* pos, const int piece, const U64 to_mask, U64(*func)(int, U64)) {
 	U64 copy = pos->color[0] & pos->pieces[piece];
 	while (copy) {
 		const int fr = LSB(copy);
@@ -359,12 +363,12 @@ static int MoveGen(const Position* pos, Move* const movelist, int only_captures)
 	}
 	generate_pawn_moves(movelist, &num_moves, NW(pawns) & (pos->color[1] | pos->ep), -7);
 	generate_pawn_moves(movelist, &num_moves, NE(pawns) & (pos->color[1] | pos->ep), -9);
-	generate_piece_moves(movelist, &num_moves, pos, KNIGHT, to_mask, KnightAttack);
-	generate_piece_moves(movelist, &num_moves, pos, BISHOP, to_mask, BishopAttack);
-	generate_piece_moves(movelist, &num_moves, pos, QUEEN, to_mask, BishopAttack);
-	generate_piece_moves(movelist, &num_moves, pos, ROOK, to_mask, RookAttack);
-	generate_piece_moves(movelist, &num_moves, pos, QUEEN, to_mask, RookAttack);
-	generate_piece_moves(movelist, &num_moves, pos, KING, to_mask, KingAttack);
+	GeneratePieceMoves(movelist, &num_moves, pos, KNIGHT, to_mask, KnightAttack);
+	GeneratePieceMoves(movelist, &num_moves, pos, BISHOP, to_mask, BishopAttack);
+	GeneratePieceMoves(movelist, &num_moves, pos, QUEEN, to_mask, BishopAttack);
+	GeneratePieceMoves(movelist, &num_moves, pos, ROOK, to_mask, RookAttack);
+	GeneratePieceMoves(movelist, &num_moves, pos, QUEEN, to_mask, RookAttack);
+	GeneratePieceMoves(movelist, &num_moves, pos, KING, to_mask, KingAttack);
 	if (!only_captures && pos->castling[0] && !(all & 0x60ULL) && !Attacked(pos, 4, 1) && !Attacked(pos, 5, 1)) {
 		add_move(movelist, &num_moves, 4, 6, PT_NB);
 	}
@@ -387,7 +391,7 @@ static U64 Rand64() {
 	return next;
 }
 
-void InitHashKeys() {
+void InitHash() {
 	for (int i = 0; i < 848; ++i)
 		keys[i] = Rand64();
 }
@@ -623,10 +627,12 @@ static int Permill() {
 }
 
 static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, Stack* stack) {
-	if (!(++info.nodes & 0xffff))
-		CheckUp();
-	if (info.stop)
+	if (CheckUp())
 		return 0;
+	int  mate_value = MATE - ply;
+	if (alpha < -mate_value) alpha = -mate_value;
+	if (beta > mate_value - 1) beta = mate_value - 1;
+	if (alpha >= beta) return alpha;
 	const int static_eval = EvalPosition(pos);
 	if (ply >= MAX_PLY)
 		return static_eval;
@@ -855,7 +861,7 @@ static inline void UciPerformance() {
 	while (elapsed < 3000) {
 		PerftDriver(&pos, info.depthLimit++);
 		elapsed = GetTimeMs() - info.timeStart;
-		printf(" %2llu. %8llu %12llu\n", info.depthLimit, elapsed, info.nodes);
+		printf(" %2d. %8llu %12llu\n", info.depthLimit, elapsed, info.nodes);
 	}
 	PrintSummary(elapsed, info.nodes);
 }
@@ -940,7 +946,7 @@ static void ParseGo(char* command) {
 	SearchIteratively(&pos);
 }
 
-static void UciCommand(char* line) {
+void UciCommand(char* line) {
 	if (!strncmp(line, "isready", 7)) {
 		printf("readyok\n");
 		fflush(stdout);
@@ -961,7 +967,7 @@ static void UciCommand(char* line) {
 		UciPerformance();
 	else if (!strncmp(line, "bench", 5))
 		UciBench();
-	else if (!strncmp(line, "exit", 4))
+	else if (!strncmp(line, "quit", 4))
 		exit(0);
 }
 
@@ -973,7 +979,7 @@ static void UciLoop() {
 
 int main(const int argc, const char** argv) {
 	printf("%s %s\n", NAME, VERSION);
-	InitHashKeys();
+	InitHash();
 	SetFen(&pos, START_FEN);
 	UciLoop();
 }
