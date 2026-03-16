@@ -91,11 +91,11 @@ int material[PT_NB] = { 100,320,330,500,900,0 };
 Stack stack[128];
 U64 keys[848];
 int hash_count = 0;
-U64 hash_history[1024]={0};
+U64 hash_history[1024] = { 0 };
 S32 hh_table[2][2][64][64] = { 0 };
 TT_Entry tt[64ULL << 15] = { 0 };
 
-void UciCommand(char* line);
+void UciCommand(Position* pos, char* line);
 
 static U64 GetTimeMs() {
 	return GetTickCount64();
@@ -218,182 +218,6 @@ static void FlipPosition(Position* pos) {
 	pos->flipped = !pos->flipped;
 }
 
-static void PrintBitboard(U64 bb) {
-	const char* s = "   +---+---+---+---+---+---+---+---+\n";
-	const char* t = "     A   B   C   D   E   F   G   H\n";
-	printf(t);
-	for (int r = 7; r >= 0; r--) {
-		printf(s);
-		printf(" %d |", r + 1);
-		for (int f = 0; f < 8; f++) {
-			int sq = r * 8 + f;
-			printf(" %c |", bb & 1ull << sq ? 'x' : ' ');
-		}
-		printf(" %d \n", r + 1);
-	}
-	printf(s);
-	printf(t);
-}
-
-static void PrintBoard(Position* pos) {
-	Position np = *pos;
-	if (np.flipped)
-		FlipPosition(&np);
-	const char* s = "   +---+---+---+---+---+---+---+---+\n";
-	const char* t = "     A   B   C   D   E   F   G   H\n";
-	printf(t);
-	for (int r = 7; r >= 0; r--) {
-		printf(s);
-		printf(" %d |", r + 1);
-		for (int f = 0; f < 8; f++) {
-			int sq = r * 8 + f;
-			int piece = PieceTypeOn(&np, sq);
-			if (np.color[0] & (1ull << sq))
-				printf(" %c |", "ANBRQK "[piece]);
-			else
-				printf(" %c |", "anbrqk "[piece]);
-		}
-		printf(" %d \n", r + 1);
-	}
-	printf(s);
-	printf(t);
-	char castling[5] = "KQkq";
-	for (int n = 0; n < 4; n++)
-		if (!np.castling[n])
-			castling[n] = '-';
-	printf("side     : %10s\n", pos->flipped ? "black" : "white");
-	printf("castling : %10s\n", castling);
-}
-
-int InputAvailable(void) {
-	static int init = 0, pipe;
-	static HANDLE inh;
-	DWORD dw;
-
-	if (!init) {
-		init = 1;
-		inh = GetStdHandle(STD_INPUT_HANDLE);
-		pipe = !GetConsoleMode(inh, &dw);
-		if (!pipe) {
-			SetConsoleMode(inh, dw & ~(ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT));
-			FlushConsoleInputBuffer(inh);
-		}
-	}
-	if (pipe) {
-		if (!PeekNamedPipe(inh, NULL, 0, NULL, &dw, NULL))
-			return 1;
-		return dw > 0;
-	}
-	else {
-		GetNumberOfConsoleInputEvents(inh, &dw);
-		return dw > 1;
-	}
-}
-
-static int CheckUp() {
-	if ((++info.nodes & 0xffff) == 0) {
-		if (info.timeLimit && GetTimeMs() - info.timeStart > info.timeLimit)
-			info.stop = TRUE;
-		if (info.nodesLimit && info.nodes > info.nodesLimit)
-			info.stop = TRUE;
-	}
-	return info.stop;
-}
-
-static U64 Attacked(Position* pos, int sq, int them) {
-	const U64 bb = 1ULL << sq;
-	const U64 kt = pos->color[them] & pos->pieces[KNIGHT];
-	const U64 BQ = pos->pieces[BISHOP] | pos->pieces[QUEEN];
-	const U64 RQ = pos->pieces[ROOK] | pos->pieces[QUEEN];
-	const U64 pawns = pos->color[them] & pos->pieces[PAWN];
-	const U64 pawn_attacks = them ? SW(pawns) | SE(pawns) : NW(pawns) | NE(pawns);
-	return (pawn_attacks & bb) | (kt & KnightAttack(sq)) |
-		(BishopAttack(sq, pos->color[0] | pos->color[1]) & pos->color[them] & BQ) |
-		(RookAttack(sq, pos->color[0] | pos->color[1]) & pos->color[them] & RQ) |
-		(KingAttack(sq) & pos->color[them] & pos->pieces[KING]);
-}
-
-static void add_move(Move* const movelist, int* num_moves, const int from, const int to, const int promo) {
-	Move* m = &movelist[(*num_moves)++];
-	m->from = from;
-	m->to = to;
-	m->promo = promo;
-}
-
-static void generate_pawn_moves(Move* const movelist, int* num_moves, U64 to_mask, const int offset) {
-	while (to_mask) {
-		const int to = (int)LSB(to_mask);
-		to_mask &= to_mask - 1;
-		if (to >= 56) {
-			add_move(movelist, num_moves, to + offset, to, QUEEN);
-			add_move(movelist, num_moves, to + offset, to, ROOK);
-			add_move(movelist, num_moves, to + offset, to, BISHOP);
-			add_move(movelist, num_moves, to + offset, to, KNIGHT);
-		}
-		else
-			add_move(movelist, num_moves, to + offset, to, PT_NB);
-	}
-}
-
-static void GeneratePieceMoves(Move* const movelist, int* num_moves, const Position* pos, const int piece, const U64 to_mask, U64(*func)(int, U64)) {
-	U64 copy = pos->color[0] & pos->pieces[piece];
-	while (copy) {
-		const int fr = LSB(copy);
-		copy &= copy - 1;
-		U64 moves = func(fr, pos->color[0] | pos->color[1]) & to_mask;
-		while (moves) {
-			const int to = LSB(moves);
-			moves &= moves - 1;
-			add_move(movelist, num_moves, fr, to, PT_NB);
-		}
-	}
-}
-
-static int MoveGen(const Position* pos, Move* const movelist, int only_captures) {
-	int num_moves = 0;
-	const U64 all = pos->color[0] | pos->color[1];
-	const U64 to_mask = only_captures ? pos->color[1] : ~pos->color[0];
-	const U64 pawns = pos->color[0] & pos->pieces[PAWN];
-	U64 maskTo = North(pawns) & ~all & (only_captures ? 0xFF00000000000000ULL : 0xFFFFFFFFFFFF0000ULL);
-	generate_pawn_moves(movelist, &num_moves, maskTo, -8);
-	if (!only_captures) {
-		generate_pawn_moves(movelist, &num_moves, North(North(pawns & 0xFF00ULL) & ~all) & ~all, -16);
-	}
-	generate_pawn_moves(movelist, &num_moves, NW(pawns) & (pos->color[1] | pos->ep), -7);
-	generate_pawn_moves(movelist, &num_moves, NE(pawns) & (pos->color[1] | pos->ep), -9);
-	GeneratePieceMoves(movelist, &num_moves, pos, KNIGHT, to_mask, KnightAttack);
-	GeneratePieceMoves(movelist, &num_moves, pos, BISHOP, to_mask, BishopAttack);
-	GeneratePieceMoves(movelist, &num_moves, pos, QUEEN, to_mask, BishopAttack);
-	GeneratePieceMoves(movelist, &num_moves, pos, ROOK, to_mask, RookAttack);
-	GeneratePieceMoves(movelist, &num_moves, pos, QUEEN, to_mask, RookAttack);
-	GeneratePieceMoves(movelist, &num_moves, pos, KING, to_mask, KingAttack);
-	if (!only_captures && pos->castling[0] && !(all & 0x60ULL) && !Attacked(pos, 4, 1) && !Attacked(pos, 5, 1)) {
-		add_move(movelist, &num_moves, 4, 6, PT_NB);
-	}
-	if (!only_captures && pos->castling[1] && !(all & 0xEULL) && !Attacked(pos, 4, 1) && !Attacked(pos, 3, 1)) {
-		add_move(movelist, &num_moves, 4, 2, PT_NB);
-	}
-	return num_moves;
-}
-
-static int IsRepetition(U64 hash) {
-	for (int n = hash_count - 4; n >= 0; n -= 2)
-		if (hash_history[n] == hash)
-			return 1;
-	return 0;
-}
-
-static U64 Rand64() {
-	static U64 next = 1;
-	next = next * 12345104729 + 104723;
-	return next;
-}
-
-void InitHash() {
-	for (int i = 0; i < 848; ++i)
-		keys[i] = Rand64();
-}
-
 static U64 GetHash(const Position* pos) {
 	U64 hash = pos->flipped;
 	for (S32 p = PAWN; p < PT_NB; ++p) {
@@ -414,6 +238,187 @@ static U64 GetHash(const Position* pos) {
 		hash ^= keys[12 * 64 + LSB(pos->ep)];
 	hash ^= keys[13 * 64 + pos->castling[0] + pos->castling[1] * 2 + pos->castling[2] * 4 + pos->castling[3] * 8];
 	return hash;
+}
+
+static void PrintBitboard(U64 bb) {
+	const char* s = "   +---+---+---+---+---+---+---+---+\n";
+	const char* t = "     A   B   C   D   E   F   G   H\n";
+	printf(t);
+	for (int r = 7; r >= 0; r--) {
+		printf(s);
+		printf(" %d |", r + 1);
+		for (int f = 0; f < 8; f++) {
+			int sq = r * 8 + f;
+			printf(" %c |", bb & 1ull << sq ? 'x' : ' ');
+		}
+		printf(" %d \n", r + 1);
+	}
+	printf(s);
+	printf(t);
+}
+
+static void PrintBoard(Position* pos) {
+	Position npos = *pos;
+	if (npos.flipped)
+		FlipPosition(&npos);
+	const char* s = "   +---+---+---+---+---+---+---+---+\n";
+	const char* t = "     A   B   C   D   E   F   G   H\n";
+	printf(t);
+	for (int r = 7; r >= 0; r--) {
+		printf(s);
+		printf(" %d |", r + 1);
+		for (int f = 0; f < 8; f++) {
+			int sq = r * 8 + f;
+			int piece = PieceTypeOn(&npos, sq);
+			if (npos.color[0] & (1ull << sq))
+				printf(" %c |", "ANBRQK "[piece]);
+			else
+				printf(" %c |", "anbrqk "[piece]);
+		}
+		printf(" %d \n", r + 1);
+	}
+	printf(s);
+	printf(t);
+	char castling[5] = "KQkq";
+	for (int n = 0; n < 4; n++)
+		if (!npos.castling[n])
+			castling[n] = '-';
+	printf("side     : %16s\n", pos->flipped ? "black" : "white");
+	printf("castling : %16s\n", castling);
+	printf("hash     : %16llx\n", GetHash(pos));
+}
+
+static int InputAvailable(void) {
+	static int init = 0, pipe;
+	static HANDLE inh;
+	DWORD dw;
+	if (!init) {
+		init = 1;
+		inh = GetStdHandle(STD_INPUT_HANDLE);
+		pipe = !GetConsoleMode(inh, &dw);
+		if (!pipe) {
+			SetConsoleMode(inh, dw & ~(ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT));
+			FlushConsoleInputBuffer(inh);
+		}
+	}
+	if (pipe) {
+		if (!PeekNamedPipe(inh, NULL, 0, NULL, &dw, NULL))
+			return 1;
+		return dw > 0;
+	}
+	else {
+		GetNumberOfConsoleInputEvents(inh, &dw);
+		return dw > 1;
+	}
+}
+
+static int CheckUp(Position* pos) {
+	if ((++info.nodes & 0xffff) == 0) {
+		if (info.timeLimit && GetTimeMs() - info.timeStart > info.timeLimit)
+			info.stop = TRUE;
+		if (info.nodesLimit && info.nodes > info.nodesLimit)
+			info.stop = TRUE;
+		if (InputAvailable()) {
+			char line[4000];
+			fgets(line, sizeof(line), stdin);
+			UciCommand(pos, line);
+		}
+	}
+	return info.stop;
+}
+
+static U64 Attacked(Position* pos, int sq, int them) {
+	const U64 bb = 1ULL << sq;
+	const U64 kt = pos->color[them] & pos->pieces[KNIGHT];
+	const U64 BQ = pos->pieces[BISHOP] | pos->pieces[QUEEN];
+	const U64 RQ = pos->pieces[ROOK] | pos->pieces[QUEEN];
+	const U64 pawns = pos->color[them] & pos->pieces[PAWN];
+	const U64 pawn_attacks = them ? SW(pawns) | SE(pawns) : NW(pawns) | NE(pawns);
+	return (pawn_attacks & bb) | (kt & KnightAttack(sq)) |
+		(BishopAttack(sq, pos->color[0] | pos->color[1]) & pos->color[them] & BQ) |
+		(RookAttack(sq, pos->color[0] | pos->color[1]) & pos->color[them] & RQ) |
+		(KingAttack(sq) & pos->color[them] & pos->pieces[KING]);
+}
+
+static void AddMove(Move* const moveList, int* num_moves, const int from, const int to, const int promo) {
+	Move* m = &moveList[(*num_moves)++];
+	m->from = from;
+	m->to = to;
+	m->promo = promo;
+}
+
+static void GeneratePawnMoves(Move* const moveList, int* num_moves, U64 to_mask, const int offset) {
+	while (to_mask) {
+		const int to = (int)LSB(to_mask);
+		to_mask &= to_mask - 1;
+		if (to >= 56) {
+			AddMove(moveList, num_moves, to + offset, to, QUEEN);
+			AddMove(moveList, num_moves, to + offset, to, ROOK);
+			AddMove(moveList, num_moves, to + offset, to, BISHOP);
+			AddMove(moveList, num_moves, to + offset, to, KNIGHT);
+		}
+		else
+			AddMove(moveList, num_moves, to + offset, to, PT_NB);
+	}
+}
+
+static void GeneratePieceMoves(Move* const moveList, int* num_moves, const Position* pos, const int piece, const U64 to_mask, U64(*func)(int, U64)) {
+	U64 copy = pos->color[0] & pos->pieces[piece];
+	while (copy) {
+		const int fr = (int)LSB(copy);
+		copy &= copy - 1;
+		U64 moves = func(fr, pos->color[0] | pos->color[1]) & to_mask;
+		while (moves) {
+			const int to = (int)LSB(moves);
+			moves &= moves - 1;
+			AddMove(moveList, num_moves, fr, to, PT_NB);
+		}
+	}
+}
+
+static int MoveGen(const Position* pos, Move* const moveList, int only_captures) {
+	int num_moves = 0;
+	const U64 all = pos->color[0] | pos->color[1];
+	const U64 to_mask = only_captures ? pos->color[1] : ~pos->color[0];
+	const U64 pawns = pos->color[0] & pos->pieces[PAWN];
+	U64 maskTo = North(pawns) & ~all & (only_captures ? 0xFF00000000000000ULL : 0xFFFFFFFFFFFF0000ULL);
+	GeneratePawnMoves(moveList, &num_moves, maskTo, -8);
+	if (!only_captures) {
+		GeneratePawnMoves(moveList, &num_moves, North(North(pawns & 0xFF00ULL) & ~all) & ~all, -16);
+	}
+	GeneratePawnMoves(moveList, &num_moves, NW(pawns) & (pos->color[1] | pos->ep), -7);
+	GeneratePawnMoves(moveList, &num_moves, NE(pawns) & (pos->color[1] | pos->ep), -9);
+	GeneratePieceMoves(moveList, &num_moves, pos, KNIGHT, to_mask, KnightAttack);
+	GeneratePieceMoves(moveList, &num_moves, pos, BISHOP, to_mask, BishopAttack);
+	GeneratePieceMoves(moveList, &num_moves, pos, QUEEN, to_mask, BishopAttack);
+	GeneratePieceMoves(moveList, &num_moves, pos, ROOK, to_mask, RookAttack);
+	GeneratePieceMoves(moveList, &num_moves, pos, QUEEN, to_mask, RookAttack);
+	GeneratePieceMoves(moveList, &num_moves, pos, KING, to_mask, KingAttack);
+	if (!only_captures && pos->castling[0] && !(all & 0x60ULL) && !Attacked(pos, 4, 1) && !Attacked(pos, 5, 1)) {
+		AddMove(moveList, &num_moves, 4, 6, PT_NB);
+	}
+	if (!only_captures && pos->castling[1] && !(all & 0xEULL) && !Attacked(pos, 4, 1) && !Attacked(pos, 3, 1)) {
+		AddMove(moveList, &num_moves, 4, 2, PT_NB);
+	}
+	return num_moves;
+}
+
+static int IsRepetition(U64 hash) {
+	for (int n = hash_count - 4; n >= 0; n -= 2)
+		if (hash_history[n] == hash)
+			return 1;
+	return 0;
+}
+
+static U64 Rand64() {
+	static U64 next = 1;
+	next = next * 12345104729 + 104723;
+	return next;
+}
+
+static void InitHash() {
+	for (int i = 0; i < 848; ++i)
+		keys[i] = Rand64();
 }
 
 static void SetFen(Position* pos, char* fen) {
@@ -462,7 +467,7 @@ static void SetFen(Position* pos, char* fen) {
 		}
 	}
 	if (fen[i] != '-') {
-		const int sq = fen[i] - 'a' + 8 * (fen[++i] - '1');
+		const int sq = (fen[i] - 'a') + 8 * (fen[i+1] - '1');
 		pos->ep = 1ull << sq;
 	}
 	if (flipped)FlipPosition(pos);
@@ -505,10 +510,10 @@ static int MakeMove(Position* pos, const Move* move) {
 		pos->pieces[PAWN] ^= to;
 		pos->pieces[move->promo] ^= to;
 	}
-	pos->castling[0] &= !((from | to) & 0x90ULL);
-	pos->castling[1] &= !((from | to) & 0x11ULL);
-	pos->castling[2] &= !((from | to) & 0x9000000000000000ULL);
-	pos->castling[3] &= !((from | to) & 0x1100000000000000ULL);
+	pos->castling[0] &= ((from | to) & 0x90ULL) == 0;
+	pos->castling[1] &= ((from | to) & 0x11ULL) == 0;
+	pos->castling[2] &= ((from | to) & 0x9000000000000000ULL) == 0;
+	pos->castling[3] &= ((from | to) & 0x1100000000000000ULL) == 0;
 	FlipPosition(pos);
 	return !Attacked(pos, LSB(pos->color[1] & pos->pieces[KING]), 0);
 }
@@ -606,7 +611,7 @@ static void PrintPv(const Position* pos, const Move move) {
 	printf(" %s", MoveToUci(move, pos->flipped));
 	const U64 tt_key = GetHash(&npos);
 	TT_Entry* tt_entry = tt + (tt_key % tt_count);
-	if (tt_entry->key != tt_key || (!tt_entry->move.from && !tt_entry->move.to) || tt_entry->flag != EXACT)
+	if (tt_entry->key != tt_key || tt_entry->flag != EXACT)
 		return;
 	if (IsRepetition(tt_key))
 		return;
@@ -617,20 +622,22 @@ static void PrintPv(const Position* pos, const Move move) {
 
 static int Permill() {
 	int pm = 0;
-	for (int n = 0; n < 1000; n++) {
+	for (int n = 0; n < 1000; n++)
 		if (tt[n].key)
 			pm++;
-	}
 	return pm;
 }
 
 static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, Stack* stack) {
-	if (CheckUp())
+	if (CheckUp(pos))
 		return 0;
 	int  mate_value = MATE - ply;
-	if (alpha < -mate_value) alpha = -mate_value;
-	if (beta > mate_value - 1) beta = mate_value - 1;
-	if (alpha >= beta) return alpha;
+	if (alpha < -mate_value)
+		alpha = -mate_value;
+	if (beta > mate_value - 1)
+		beta = mate_value - 1;
+	if (alpha >= beta)
+		return alpha;
 	const int static_eval = EvalPosition(pos);
 	if (ply >= MAX_PLY)
 		return static_eval;
@@ -643,7 +650,6 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 	if (ply > 0 && !in_qsearch)
 		if (IsRepetition(tt_key))
 			return 0;
-	// TT Probing
 	TT_Entry* tt_entry = tt + (tt_key % tt_count);
 	Move tt_move = { 0 };
 	if (tt_entry->key == tt_key) {
@@ -744,7 +750,7 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 						printf("mate %d", (score > 0 ? (MATE - score + 1) >> 1 : -(MATE + score) >> 1));
 					printf(" time %lld", GetTimeMs() - info.timeStart);
 					printf(" nodes %lld", info.nodes);
-					printf(" hashfull %d pv",Permill());
+					printf(" hashfull %d pv", Permill());
 					PrintPv(pos, stack[0].move);
 					printf("\n");
 				}
@@ -770,13 +776,11 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 	hash_count--;
 	if (best_score == -INF)
 		return in_qsearch ? alpha : in_check ? ply - MATE : 0;
-	else {
-		tt_entry->key = tt_key;
-		tt_entry->move = best_move;
-		tt_entry->depth = depth;
-		tt_entry->score = best_score;
-		tt_entry->flag = tt_flag;
-	}
+	tt_entry->key = tt_key;
+	tt_entry->move = best_move;
+	tt_entry->depth = depth;
+	tt_entry->score = best_score;
+	tt_entry->flag = tt_flag;
 	return alpha;
 }
 
@@ -785,9 +789,8 @@ static void SearchIteratively(Position* pos) {
 		SearchAlpha(pos, -MATE, MATE, depth, 0, stack);
 		if (info.stop)
 			break;
-		if (info.timeLimit && GetTimeMs() - info.timeStart > info.timeLimit / 2) {
+		if (info.timeLimit && GetTimeMs() - info.timeStart > info.timeLimit / 2)
 			break;
-		}
 	}
 	if (info.post) {
 		char* uci = MoveToUci(stack[0].move, pos->flipped);
@@ -796,10 +799,20 @@ static void SearchIteratively(Position* pos) {
 	}
 }
 
+static void ResetInfo() {
+	info.timeStart = GetTimeMs();
+	info.timeLimit = 0;
+	info.depthLimit = MAX_PLY;
+	info.nodesLimit = 0;
+	info.nodes = 0;
+	info.stop = FALSE;
+	info.post = TRUE;
+}
+
 static inline void PerftDriver(Position* pos, int depth) {
 	Move moves[256];
 	const int num_moves = MoveGen(pos, moves, 0);
-	for (int n = 0; n < num_moves; n++){
+	for (int n = 0; n < num_moves; n++) {
 		Position npos = *pos;
 		if (!MakeMove(&npos, &moves[n]))
 			continue;
@@ -831,16 +844,6 @@ static void PrintSummary(U64 time, U64 nodes) {
 	printf("Nodes       : %llu\n", nodes);
 	printf("Nps         : %llu (%llu%s/s)\n", nps, nps / p, units[sn]);
 	printf("-----------------------------\n");
-}
-
-void ResetInfo() {
-	info.timeStart = GetTimeMs();
-	info.timeLimit = 0;
-	info.depthLimit = MAX_PLY;
-	info.nodesLimit = 0;
-	info.nodes = 0;
-	info.stop = FALSE;
-	info.post = TRUE;
 }
 
 void PrintPerformanceHeader() {
@@ -880,7 +883,11 @@ static void UciBench(Position* pos) {
 	PrintSummary(elapsed, info.nodes);
 }
 
-static void ParsePosition(Position* pos,char* ptr) {
+static void UciNewGame() {
+	memset(hh_table, 0, sizeof(hh_table));
+}
+
+static void ParsePosition(Position* pos, char* ptr) {
 	char token[80], fen[80];
 	ptr = ParseToken(ptr, token);
 	if (strcmp(token, "fen") == 0) {
@@ -906,12 +913,11 @@ static void ParsePosition(Position* pos,char* ptr) {
 			if (*token == '\0')
 				break;
 			Move m = UciToMove(token, pos->flipped);
-			if (!MakeMove(pos, &m))
-				printf("Illegal move (%s).\n", token);
+			MakeMove(pos, &m);
 		}
 }
 
-static void ParseGo(Position* pos,char* command) {
+static void ParseGo(Position* pos, char* command) {
 	ResetInfo();
 	int wtime = 0;
 	int btime = 0;
@@ -942,35 +948,32 @@ static void ParseGo(Position* pos,char* command) {
 	SearchIteratively(pos);
 }
 
-void UciCommand(Position* pos,char* line) {
-	if (!strncmp(line, "isready", 7)) {
-		printf("readyok\n");
-		fflush(stdout);
-	}
-	else if (!strncmp(line, "ucinewgame", 10))
-		memset(hh_table, 0, sizeof(hh_table));
+void UciCommand(Position* pos, char* line) {
+	if (!strncmp(line, "ucinewgame", 10))UciNewGame();
 	else if (!strncmp(line, "uci", 3)) {
 		printf("id name %s\nuciok\n", NAME);
 		fflush(stdout);
 	}
-	else if (!strncmp(line, "go", 2))
-		ParseGo(pos,line + 2);
-	else if (!strncmp(line, "position", 8))
-		ParsePosition(pos,line + 8);
-	else if (!strncmp(line, "print", 5))
-		PrintBoard(&pos);
-	else if (!strncmp(line, "perft", 5))
-		UciPerformance(pos);
-	else if (!strncmp(line, "bench", 5))
-		UciBench(pos);
-	else if (!strncmp(line, "quit", 4))
-		exit(0);
+	else if (!strncmp(line, "isready", 7)) {
+		printf("readyok\n");
+		fflush(stdout);
+	}
+	else if (!strncmp(line, "go", 2))ParseGo(pos, line + 2);
+	else if (!strncmp(line, "position", 8))ParsePosition(pos, line + 8);
+	else if (!strncmp(line, "print", 5))PrintBoard(pos);
+	else if (!strncmp(line, "perft", 5))UciPerformance(pos);
+	else if (!strncmp(line, "bench", 5))UciBench(pos);
+	else if (!strncmp(line, "stop", 4))info.stop = TRUE;
+	else if (!strncmp(line, "quit", 4))exit(0);
 }
 
 static void UciLoop(Position* pos) {
+	//UciCommand(pos, "position fen 6k1/2PR4/8/8/5K2/8/8/8 b - - 0 78");
+	//UciCommand(pos, "go depth 3");
+	//UciCommand(pos, "position fen 8/3k4/8/1K4Pp/8/8/8/8 w - h6 86 144");
 	char line[4000];
 	while (fgets(line, sizeof(line), stdin))
-		UciCommand(pos,line);
+		UciCommand(pos, line);
 }
 
 int main(const int argc, const char** argv) {
