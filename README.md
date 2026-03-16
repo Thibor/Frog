@@ -16,10 +16,4 @@
 
 ## Features
 
-- [x] Alpha beta pruning<br>
-- [x] Transposition table<br>
-- [x] Bitboard<br>
-- [ ] Mate distance pruning<br>
-- [ ] Null move pruning<br>
-- [ ] Futility pruning<br>
-- [ ] Razoring<br>
+- board: bitboard
