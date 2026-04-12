@@ -27,6 +27,7 @@ enum Bound { UPPER, LOWER, EXACT };
 
 typedef struct {
 	int flipped;
+	int move50;
 	U64 castling[4];
 	U64 color[2];
 	U64 pieces[6];
@@ -458,7 +459,7 @@ static void SetFen(Position* pos, char* fen) {
 		default: z = 1; break;
 		}
 	}
-	int flipped = fen[i++] == 'w' ? 0 : 1;
+	int flipped = fen[i++] == 'b';
 	i++;
 	for (z = 0; i < n && !z; ++i) {
 		switch (fen[i]) {
@@ -471,9 +472,11 @@ static void SetFen(Position* pos, char* fen) {
 		}
 	}
 	if (fen[i] != '-') {
-		const int sq = (fen[i] - 'a') + 8 * (fen[i+1] - '1');
+		const int sq = (fen[i] - 'a') + 8 * (fen[i + 1] - '1');
 		pos->ep = 1ull << sq;
+		i++;
 	}
+	pos->move50 = atoi(fen + i + 2);
 	if (flipped)FlipPosition(pos);
 }
 
@@ -491,6 +494,7 @@ static int MakeMove(Position* pos, const Move* move) {
 	const int captured = PieceTypeOn(pos, move->to);
 	const U64 to = 1ULL << move->to;
 	const U64 from = 1ULL << move->from;
+	pos->move50 = captured != PT_NB || piece == PAWN ? 0 : pos->move50++;
 	pos->color[0] ^= from | to;
 	pos->pieces[piece] ^= from | to;
 	if (piece == PAWN && to == pos->ep) {
@@ -630,7 +634,7 @@ static int Permill() {
 	return pm;
 }
 
-static void PrintInfo(Position *pos,int depth,int score) {
+static void PrintInfo(Position* pos, int depth, int score) {
 	printf("info depth %d score ", depth);
 	if (abs(score) < MATE - MAX_PLY)
 		printf("cp %d", score);
@@ -663,7 +667,7 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 	int in_qsearch = depth < 1;
 	const U64 hash = GetHash(pos);
 	if (ply && !in_qsearch)
-		if (IsRepetition(hash))
+		if (pos->move50>=100 || IsRepetition(hash))
 			return 0;
 	TT_Entry* tt_entry = tt + (hash % tt_count);
 	Move tt_move = { 0 };
@@ -721,12 +725,12 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 		S32 score;
 		S32 reduction = depth > 3 && num_moves_evaluated > 1
 			? max(num_moves_evaluated / 13 + depth / 14 + (alpha == beta - 1) + !improving -
-				min(max(hh_table[pos->flipped][!gain][move.from][move.to] / 128, -2), 2),0): 0;
-		while (num_moves_evaluated && (score = -SearchAlpha(&npos,-alpha - 1,-alpha,depth - reduction - 1,ply + 1,stack)) > alpha && reduction > 0)
+				min(max(hh_table[pos->flipped][!gain][move.from][move.to] / 128, -2), 2), 0) : 0;
+		while (num_moves_evaluated && (score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - reduction - 1, ply + 1, stack)) > alpha && reduction > 0)
 			reduction = 0;
 
 		if (!num_moves_evaluated || score > alpha && score < beta)
-			score = -SearchAlpha(&npos,-beta,-alpha,depth - 1,ply + 1,stack);
+			score = -SearchAlpha(&npos, -beta, -alpha, depth - 1, ply + 1, stack);
 		if (info.stop)
 			break;
 		if (score > best_score) {
@@ -737,7 +741,7 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 				tt_flag = EXACT;
 				stack[ply].move = move;
 				if (!ply && info.post)
-					PrintInfo(pos,depth,score);
+					PrintInfo(pos, depth, score);
 			}
 		}
 		if (alpha >= beta) {
@@ -878,7 +882,7 @@ static void UciBench(Position* pos) {
 	info.depthLimit = 0;
 	info.post = FALSE;
 	U64 elapsed = 0;
-	while (elapsed < 3000){
+	while (elapsed < 3000) {
 		++info.depthLimit;
 		SearchIteratively(pos);
 		elapsed = GetTimeMs() - info.timeStart;
@@ -975,7 +979,7 @@ void UciCommand(Position* pos, char* line) {
 }
 
 static void UciLoop(Position* pos) {
-	//UciCommand(pos,"uci");
+	//UciCommand(pos, "position fen r2q1rk1/pbp1bppp/1p3n2/3Np3/2PnP3/P2B2N1/1P3PPP/R1BQ1RK1 w - - 36 13");
 	//UciCommand(pos,"ucinewgame");
 	//UciCommand(pos,"position startpos moves moves b1a3 b8a6 g1h3\n");
 	//UciCommand(pos,"go movetime 1000");
