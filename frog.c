@@ -47,7 +47,7 @@ typedef struct {
 } Stack;
 
 typedef struct {
-	U64 key;
+	U64 hash;
 	Move move;
 	int score;
 	int depth;
@@ -65,6 +65,9 @@ typedef struct {
 }SSearchInfo;
 
 SSearchInfo info;
+
+static const U64 FILE_A = 0x0101010101010101ULL;
+static const U64 FILE_H = 0x8080808080808080ULL;
 
 U64 ranksBB[8] = {
 	0x00000000000000ffULL,
@@ -86,13 +89,14 @@ U64 filesBB[8] = {
 	0x4040404040404040ULL,
 	0x8080808080808080ULL };
 
-const U64 tt_count = 64ULL << 15;
+
 int material[PT_NB] = { 100,320,330,500,900,0 };
 Stack stack[128];
 U64 keys[848];
-int hash_count = 0;
-U64 hash_history[1024] = { 0 };
+int historyCount = 0;
+U64 historyHash[1024];
 S32 hh_table[2][2][64][64] = { 0 };
+const U64 tt_count = 64ULL << 15;
 TT_Entry tt[64ULL << 15] = { 0 };
 
 void UciCommand(Position* pos, char* line);
@@ -115,11 +119,11 @@ static U64 Count(const U64 bb) {
 }
 
 static U64 East(const U64 bb) {
-	return (bb << 1) & ~0x0101010101010101ULL;
+	return (bb << 1) & ~FILE_A;
 }
 
 static U64 West(const U64 bb) {
-	return (bb >> 1) & ~0x8080808080808080ULL;
+	return (bb >> 1) & ~FILE_H;
 }
 
 static U64 North(const U64 bb) {
@@ -404,8 +408,8 @@ static int MoveGen(const Position* pos, Move* const moveList, int only_captures)
 }
 
 static int IsRepetition(U64 hash) {
-	for (int n = hash_count - 4; n >= 0; n -= 2)
-		if (hash_history[n] == hash)
+	for (int n = historyCount - 4; n >= 0; n -= 2)
+		if (historyHash[n] == hash)
 			return 1;
 	return 0;
 }
@@ -476,7 +480,7 @@ static void SetFen(Position* pos, char* fen) {
 static char* ParseToken(char* string, char* token) {
 	while (*string == ' ')
 		string++;
-	while (*string != ' ' && *string != '\0')
+	while (*string != ' ' && *string != '\0' && *string != '\n')
 		*token++ = *string++;
 	*token = '\0';
 	return string;
@@ -609,23 +613,34 @@ static void PrintPv(const Position* pos, const Move move) {
 	if (!MakeMove(&npos, &move))
 		return;
 	printf(" %s", MoveToUci(move, pos->flipped));
-	const U64 tt_key = GetHash(&npos);
-	TT_Entry* tt_entry = tt + (tt_key % tt_count);
-	if (tt_entry->key != tt_key || tt_entry->flag != EXACT)
+	const U64 hash = GetHash(&npos);
+	TT_Entry* tt_entry = tt + (hash % tt_count);
+	if (tt_entry->hash != hash || IsRepetition(hash))
 		return;
-	if (IsRepetition(tt_key))
-		return;
-	hash_history[hash_count++] = tt_key;
+	historyHash[historyCount++] = hash;
 	PrintPv(&npos, tt_entry->move);
-	hash_count--;
+	historyCount--;
 }
 
 static int Permill() {
 	int pm = 0;
 	for (int n = 0; n < 1000; n++)
-		if (tt[n].key)
+		if (tt[n].hash)
 			pm++;
 	return pm;
+}
+
+static void PrintInfo(Position *pos,int depth,int score) {
+	printf("info depth %d score ", depth);
+	if (abs(score) < MATE - MAX_PLY)
+		printf("cp %d", score);
+	else
+		printf("mate %d", (score > 0 ? (MATE - score + 1) >> 1 : -(MATE + score) >> 1));
+	printf(" time %lld", GetTimeMs() - info.timeStart);
+	printf(" nodes %lld", info.nodes);
+	printf(" hashfull %d pv", Permill());
+	PrintPv(pos, stack[0].move);
+	printf("\n");
 }
 
 static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, Stack* stack) {
@@ -645,22 +660,19 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 	const U64 in_check = Attacked(pos, (int)LSB(pos->color[0] & pos->pieces[KING]), 1);
 	if (in_check)
 		depth = max(1, depth + 1);
-	int in_qsearch = depth <= 0;
-	const U64 tt_key = GetHash(pos);
-	if (ply > 0 && !in_qsearch)
-		if (IsRepetition(tt_key))
+	int in_qsearch = depth < 1;
+	const U64 hash = GetHash(pos);
+	if (ply && !in_qsearch)
+		if (IsRepetition(hash))
 			return 0;
-	TT_Entry* tt_entry = tt + (tt_key % tt_count);
+	TT_Entry* tt_entry = tt + (hash % tt_count);
 	Move tt_move = { 0 };
-	if (tt_entry->key == tt_key) {
+	if (tt_entry->hash == hash) {
 		tt_move = tt_entry->move;
 		if (alpha == beta - 1 && tt_entry->depth >= depth) {
-			if (tt_entry->flag == EXACT)
-				return tt_entry->score;
-			if (tt_entry->flag == LOWER && tt_entry->score <= alpha)
-				return tt_entry->score;
-			if (tt_entry->flag == UPPER && tt_entry->score >= beta)
-				return tt_entry->score;
+			if (tt_entry->flag == EXACT)return tt_entry->score;
+			if (tt_entry->flag == LOWER && tt_entry->score <= alpha)return tt_entry->score;
+			if (tt_entry->flag == UPPER && tt_entry->score >= beta)return tt_entry->score;
 		}
 	}
 	else
@@ -676,7 +688,7 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 	Move best_move = { 0 };
 	int best_score = -INF;
 	Move moves[256];
-	hash_history[hash_count++] = tt_key;
+	historyHash[historyCount++] = hash;
 	const int num_moves = MoveGen(pos, moves, in_qsearch);
 	S64 move_scores[256];
 	for (int j = 0; j < num_moves; ++j) {
@@ -709,31 +721,14 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 		S32 score;
 		S32 reduction = depth > 3 && num_moves_evaluated > 1
 			? max(num_moves_evaluated / 13 + depth / 14 + (alpha == beta - 1) + !improving -
-				min(max(hh_table[pos->flipped][!gain][move.from][move.to] / 128, -2), 2),
-				0)
-			: 0;
-
-		while (num_moves_evaluated &&
-			(score = -SearchAlpha(&npos,
-				-alpha - 1,
-				-alpha,
-				depth - reduction - 1,
-				ply + 1,
-				stack)) > alpha &&
-			reduction > 0)
+				min(max(hh_table[pos->flipped][!gain][move.from][move.to] / 128, -2), 2),0): 0;
+		while (num_moves_evaluated && (score = -SearchAlpha(&npos,-alpha - 1,-alpha,depth - reduction - 1,ply + 1,stack)) > alpha && reduction > 0)
 			reduction = 0;
 
 		if (!num_moves_evaluated || score > alpha && score < beta)
-			score = -SearchAlpha(&npos,
-				-beta,
-				-alpha,
-				depth - 1,
-				ply + 1,
-				stack);
-		if (info.stop) {
-			hash_count--;
-			return 0;
-		}
+			score = -SearchAlpha(&npos,-beta,-alpha,depth - 1,ply + 1,stack);
+		if (info.stop)
+			break;
 		if (score > best_score) {
 			best_score = score;
 			best_move = move;
@@ -742,18 +737,7 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 				tt_flag = EXACT;
 				stack[ply].move = move;
 				if (!ply && info.post)
-				{
-					printf("info depth %d score ", depth);
-					if (abs(score) < MATE - MAX_PLY)
-						printf("cp %d", score);
-					else
-						printf("mate %d", (score > 0 ? (MATE - score + 1) >> 1 : -(MATE + score) >> 1));
-					printf(" time %lld", GetTimeMs() - info.timeStart);
-					printf(" nodes %lld", info.nodes);
-					printf(" hashfull %d pv", Permill());
-					PrintPv(pos, stack[0].move);
-					printf("\n");
-				}
+					PrintInfo(pos,depth,score);
 			}
 		}
 		if (alpha >= beta) {
@@ -773,10 +757,12 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 		}
 		stack[ply].moves_evaluated[num_moves_evaluated++] = move;
 	}
-	hash_count--;
+	historyCount--;
+	if (info.stop)
+		return 0;
 	if (best_score == -INF)
 		return in_qsearch ? alpha : in_check ? ply - MATE : 0;
-	tt_entry->key = tt_key;
+	tt_entry->hash = hash;
 	tt_entry->move = best_move;
 	tt_entry->depth = depth;
 	tt_entry->score = best_score;
@@ -785,8 +771,27 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 }
 
 static void SearchIteratively(Position* pos) {
+	int score = 0;
+	int alpha = 0;
+	int beta = 0;
+	int delta = 0;
 	for (int depth = 1; depth <= info.depthLimit; ++depth) {
-		SearchAlpha(pos, -MATE, MATE, depth, 0, stack);
+		alpha = -MATE;
+		beta = MATE;
+		delta = 10;
+		if (depth >= 4) { alpha = max(-MATE, score - delta); beta = min(MATE, score + delta); }
+		while (TRUE) {
+			score = SearchAlpha(pos, -MATE, MATE, depth, 0, stack);
+			if (info.stop)
+				break;
+			delta += delta / 2;
+			if (score <= alpha)
+				alpha = max(-MATE, score - delta);
+			else if (score >= beta)
+				beta = min(MATE, score + delta);
+			else
+				break;
+		}
 		if (info.stop)
 			break;
 		if (info.timeLimit && GetTimeMs() - info.timeStart > info.timeLimit / 2)
@@ -873,8 +878,7 @@ static void UciBench(Position* pos) {
 	info.depthLimit = 0;
 	info.post = FALSE;
 	U64 elapsed = 0;
-	while (elapsed < 3000)
-	{
+	while (elapsed < 3000){
 		++info.depthLimit;
 		SearchIteratively(pos);
 		elapsed = GetTimeMs() - info.timeStart;
@@ -905,16 +909,19 @@ static void ParsePosition(Position* pos, char* ptr) {
 		ptr = ParseToken(ptr, token);
 		SetFen(pos, START_FEN);
 	}
-	hash_count = 0;
-	if (strcmp(token, "moves") == 0)
+	historyCount = 0;
+	if (strcmp(token, "moves") == 0) {
 		while (1) {
-			hash_history[hash_count++] = GetHash(pos);
+			historyHash[historyCount++] = GetHash(pos);
 			ptr = ParseToken(ptr, token);
 			if (*token == '\0')
 				break;
 			Move m = UciToMove(token, pos->flipped);
 			MakeMove(pos, &m);
+			printf("info string played move %s\n", token);
+			printf("line");
 		}
+	}
 }
 
 static void ParseGo(Position* pos, char* command) {
@@ -968,9 +975,10 @@ void UciCommand(Position* pos, char* line) {
 }
 
 static void UciLoop(Position* pos) {
-	//UciCommand(pos, "position fen 6k1/2PR4/8/8/5K2/8/8/8 b - - 0 78");
-	//UciCommand(pos, "go depth 3");
-	//UciCommand(pos, "position fen 8/3k4/8/1K4Pp/8/8/8/8 w - h6 86 144");
+	//UciCommand(pos,"uci");
+	//UciCommand(pos,"ucinewgame");
+	//UciCommand(pos,"position startpos moves moves b1a3 b8a6 g1h3\n");
+	//UciCommand(pos,"go movetime 1000");
 	char line[4000];
 	while (fgets(line, sizeof(line), stdin))
 		UciCommand(pos, line);
