@@ -594,7 +594,7 @@ static int EvalPosition(Position* pos) {
 		FlipPosition(pos);
 		score = -score;
 	}
-	return score;
+	return ((100 - pos->move50) * score) / 100;
 }
 
 static int Equal(const Move lhs, const Move rhs) {
@@ -667,7 +667,7 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 	int in_qsearch = depth < 1;
 	const U64 hash = GetHash(pos);
 	if (ply && !in_qsearch)
-		if (pos->move50>=100 || IsRepetition(hash))
+		if (pos->move50 >= 100 || IsRepetition(hash))
 			return 0;
 	TT_Entry* tt_entry = tt + (hash % tt_count);
 	Move tt_move = { 0 };
@@ -922,8 +922,6 @@ static void ParsePosition(Position* pos, char* ptr) {
 				break;
 			Move m = UciToMove(token, pos->flipped);
 			MakeMove(pos, &m);
-			printf("info string played move %s\n", token);
-			printf("line");
 		}
 	}
 }

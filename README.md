@@ -22,6 +22,6 @@ FIDE-rules-compliant chess engine
 - Board: bitboard
 - En passant
 - Underpromotions (knight, bishop, rook)
-- 2-fold repetition detection
+- Threefold repetition
 - 50-move rule
 - Stalemate and checkmate reported correctly to the GUI
