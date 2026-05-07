@@ -94,6 +94,7 @@ U64 filesBB[8] = {
 
 
 int material[7] = { 100,320,330,500,900,0,0 };
+int insufVal[PT_NB] = { 3,1,2,3,3,0 };
 Stack stack[128];
 U64 keys[848];
 int historyCount = 0;
@@ -574,10 +575,14 @@ static Move UciToMove(char* s, int flip) {
 
 static int EvalPosition(Position* pos) {
 	int score = 0;
+	int insufficent[2] = { 0 };
 	U64 bbBlockers = pos->color[0] | pos->color[1];
 	for (int c = WHITE; c < COLOR_NB; c++) {
-		for (int pt = PAWN; pt < KING; ++pt)
-			score += material[pt] * Count(pos->color[0] & pos->pieces[pt]);
+		for (int pt = PAWN; pt < KING; ++pt) {
+			int count = Count(pos->color[0] & pos->pieces[pt]);
+			score += material[pt] * count;
+			insufficent[c] += insufVal[pt] * count;
+		}
 		U64 bbStart1 = pos->color[1] & pos->pieces[PAWN];
 		U64 bbControl1 = SW(bbStart1) | SE(bbStart1);
 		score -= Count(bbControl1);
@@ -600,6 +605,8 @@ static int EvalPosition(Position* pos) {
 		FlipPosition(pos);
 		score = -score;
 	}
+	if (max(insufficent[0], insufficent[1]) < 3)
+		return 0;
 	return (100 - pos->move50) * score / 100;
 }
 
@@ -880,7 +887,7 @@ static void UciBench(Position* pos) {
 }
 
 static void UciNewGame() {
-	memset(hh_table, 0, sizeof(hh_table));
+	memset(hh_table, 0, sizeof hh_table);
 }
 
 static void ParsePosition(Position* pos, char* ptr) {
