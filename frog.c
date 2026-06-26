@@ -46,7 +46,6 @@ typedef struct {
 	S16 score;
 	Move move;
 	Move killer;
-	Move moves_evaluated[256];
 } Stack;
 
 typedef struct {
@@ -95,7 +94,6 @@ int insufVal[PT_NB] = { 5,2,3,5,5,0 };
 int historyCount = 0;
 U64 keys[848];
 U64 historyHash[1024];
-S32 hh_table[2][2][64][64];
 const U64 tt_count = 64ULL << 15;
 U64 bbSquare[64];
 U64 bbKnightAttack[64];
@@ -157,6 +155,14 @@ static inline U64 SE(const U64 bb) {
 
 static inline int FileOf(int sq) {
 	return sq % 8;
+}
+
+static inline int RankOf(int sq) {
+	return sq / 8;
+}
+
+inline static int Center(int rank, int file) {
+	return -abs(rank * 2 - 7) / 2 - abs(file * 2 - 7) / 2;
 }
 
 static void Swap(U64* a, U64* b) {
@@ -538,9 +544,9 @@ static int MakeMove(Position* pos, const Move* move) {
 static char* MoveToUci(Move move, int flip) {
 	static char str[6] = { 0 };
 	str[0] = 'a' + FileOf(move.from);
-	str[1] = '1' + (flip ? (7 - move.from / 8) : (move.from / 8));
+	str[1] = '1' + (flip ? (7 - RankOf(move.from)) : RankOf(move.from));
 	str[2] = 'a' + FileOf(move.to);
-	str[3] = '1' + (flip ? (7 - move.to / 8) : (move.to / 8));
+	str[3] = '1' + (flip ? (7 - RankOf(move.to)) : RankOf(move.to));
 	str[4] = "\0nbrq\0\0"[move.promo];
 	return str;
 }
@@ -669,6 +675,12 @@ static void PrintInfo(Position* pos, int depth, int score) {
 	printf("\n");
 }
 
+static int CenterSq(int sq) {
+	int rank = RankOf(sq);
+	int file = FileOf(sq);
+	return Center(rank, file);
+}
+
 static S16 SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, Stack* stack) {
 	if (CheckUp(pos))
 		return 0;
@@ -710,10 +722,7 @@ static S16 SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 		if (alpha >= beta)
 			return beta;
 	}
-	S32 num_moves_evaluated = 0;
 	U8 tt_flag = LOWER;
-	Move best_move = { 0 };
-	S16 best_score = -INF;
 	Move moves[256];
 	historyHash[historyCount++] = hash;
 	const int num_moves = MoveGen(pos, moves, in_qsearch);
@@ -726,10 +735,8 @@ static S16 SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 			move_scores[j] = ((ptDes + 1) * (1LL << 54)) - PieceTypeOn(pos, moves[j].from);
 		else if (Equal(moves[j], stack[ply].killer))
 			move_scores[j] = 1LL << 50;
-		else {
-			const S32 gain = moves[j].promo < PT_NB || ptDes < PT_NB;
-			move_scores[j] = hh_table[pos->flipped][!gain][moves[j].from][moves[j].to];
-		}
+		else
+			move_scores[j] = CenterSq(moves[j].to) - CenterSq(moves[j].from);
 	}
 	S16 score;
 	int legalMoves = 0;
@@ -739,7 +746,6 @@ static S16 SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 			if (move_scores[bstIdx] < move_scores[j])
 				bstIdx = j;
 		Move move = moves[bstIdx];
-		const S32 gain = move.promo < PT_NB || PieceTypeOn(pos, move.to) < PT_NB;
 		move_scores[bstIdx] = move_scores[i];
 		moves[bstIdx] = moves[i];
 		Position npos = *pos;
@@ -755,45 +761,32 @@ static S16 SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 			if (score > alpha && score < beta)
 				score = -SearchAlpha(&npos, -beta, -alpha, depth - 1, ply + 1, stack);
 		}
-		legalMoves++;
 		if (info.stop)
 			break;
-		if (score > best_score) {
-			best_score = score;
-			best_move = move;
-			if (alpha < score) {
-				alpha = score;
-				tt_flag = EXACT;
-				stack[ply].move = move;
-				if (!ply && info.post)
-					PrintInfo(pos, depth, score);
+		legalMoves++;
+		if (alpha < score) {
+			alpha = score;
+			tt_flag = EXACT;
+			stack[ply].move = move;
+			if (!ply && info.post)
+				PrintInfo(pos, depth, score);
+			if (alpha >= beta) {
+				tt_flag = UPPER;
+				if (move.promo == PT_NB && PieceTypeOn(pos, move.to) == PT_NB)
+					stack[ply].killer = move;
+				break;
 			}
 		}
-		if (alpha >= beta) {
-			tt_flag = UPPER;
-			if (!gain)
-				stack[ply].killer = move;
-			hh_table[pos->flipped][!gain][move.from][move.to] += depth * depth - depth * depth * hh_table[pos->flipped][!gain][move.from][move.to] / 512;
-			for (S32 j = 0; j < num_moves_evaluated; ++j) {
-				const S32 prev_gain = material[stack[ply].moves_evaluated[j].promo] + material[PieceTypeOn(pos, stack[ply].moves_evaluated[j].to)];
-				hh_table[pos->flipped][!prev_gain][stack[ply].moves_evaluated[j].from][stack[ply].moves_evaluated[j].to] -=
-					depth * depth +
-					depth * depth *
-					hh_table[pos->flipped][!prev_gain][stack[ply].moves_evaluated[j].from][stack[ply].moves_evaluated[j].to] / 512;
-			}
-			break;
-		}
-		stack[ply].moves_evaluated[num_moves_evaluated++] = move;
 	}
 	historyCount--;
 	if (info.stop)
 		return 0;
-	if (best_score == -INF)
+	if (!legalMoves && !in_qsearch)
 		return in_qsearch ? alpha : in_check ? ply - MATE : 0;
 	tt_entry->hash = hash;
-	tt_entry->move = best_move;
+	tt_entry->move = stack[ply].move;
 	tt_entry->depth = max(0, depth);
-	tt_entry->score = best_score;
+	tt_entry->score = alpha;
 	tt_entry->flag = tt_flag;
 	return alpha;
 }
@@ -918,7 +911,7 @@ static void UciBench(Position* pos) {
 }
 
 static void UciNewGame() {
-	memset(hh_table, 0, sizeof hh_table);
+	memset(tt, 0, sizeof(tt));
 }
 
 static void ParsePosition(Position* pos, char* ptr) {
