@@ -45,7 +45,8 @@ typedef struct {
 typedef struct {
 	S16 score;
 	Move move;
-	Move killer;
+	Move killer1;
+	Move killer2;
 } Stack;
 
 typedef struct {
@@ -161,8 +162,16 @@ static inline int RankOf(int sq) {
 	return sq / 8;
 }
 
-inline static int Center(int rank, int file) {
+static inline int Center(int rank, int file) {
 	return -abs(rank * 2 - 7) / 2 - abs(file * 2 - 7) / 2;
+}
+
+static inline void TTClear() {
+	memset(tt, 0, sizeof(tt));
+}
+
+static inline void UciNewGame() {
+	TTClear();
 }
 
 static void Swap(U64* a, U64* b) {
@@ -171,7 +180,7 @@ static void Swap(U64* a, U64* b) {
 	*b = temp;
 }
 
-static int PieceTypeOn(Position* pos, int sq) {
+static int PieceTypeOnSquare(Position* pos, int sq) {
 	const U64 bb = bbSquare[sq];
 	for (int i = PAWN; i < PT_NB; ++i)
 		if (pos->pieces[i] & bb)
@@ -288,7 +297,7 @@ static void PrintBoard(Position* pos) {
 		printf(" %d |", r + 1);
 		for (int f = 0; f < 8; f++) {
 			int sq = r * 8 + f;
-			int piece = PieceTypeOn(&npos, sq);
+			int piece = PieceTypeOnSquare(&npos, sq);
 			if (npos.color[0] & (1ull << sq))
 				printf(" %c |", "ANBRQK "[piece]);
 			else
@@ -504,8 +513,8 @@ static char* ParseToken(char* string, char* token) {
 }
 
 static int MakeMove(Position* pos, const Move* move) {
-	const int piece = PieceTypeOn(pos, move->from);
-	const int captured = PieceTypeOn(pos, move->to);
+	const int piece = PieceTypeOnSquare(pos, move->from);
+	const int captured = PieceTypeOnSquare(pos, move->to);
 	const U64 to = bbSquare[move->to];
 	const U64 from = bbSquare[move->from];
 	pos->move50++;
@@ -726,27 +735,29 @@ static S16 SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 	Move moves[256];
 	historyHash[historyCount++] = hash;
 	const int num_moves = MoveGen(pos, moves, in_qsearch);
-	S64 move_scores[256];
+	S64 scoreList[256];
 	for (int j = 0; j < num_moves; ++j) {
-		const int ptDes = PieceTypeOn(pos, moves[j].to);
+		const int ptDes = PieceTypeOnSquare(pos, moves[j].to);
 		if (Equal(moves[j], tt_move))
-			move_scores[j] = 1LL << 62;
+			scoreList[j] = 1LL << 62;
 		else if (ptDes != PT_NB)
-			move_scores[j] = ((ptDes + 1) * (1LL << 54)) - PieceTypeOn(pos, moves[j].from);
-		else if (Equal(moves[j], stack[ply].killer))
-			move_scores[j] = 1LL << 50;
+			scoreList[j] = ((ptDes + 1) * (1LL << 54)) - PieceTypeOnSquare(pos, moves[j].from);
+		else if (Equal(moves[j], stack[ply].killer1))
+			scoreList[j] = 1LL << 50;
+		else if (Equal(moves[j], stack[ply].killer2))
+			scoreList[j] = 1LL << 48;
 		else
-			move_scores[j] = CenterSq(moves[j].to) - CenterSq(moves[j].from);
+			scoreList[j] = CenterSq(moves[j].to) - CenterSq(moves[j].from);
 	}
 	S16 score;
 	int legalMoves = 0;
 	for (int i = 0; i < num_moves; ++i) {
 		int bstIdx = i;
 		for (int j = i + 1; j < num_moves; ++j)
-			if (move_scores[bstIdx] < move_scores[j])
+			if (scoreList[bstIdx] < scoreList[j])
 				bstIdx = j;
 		Move move = moves[bstIdx];
-		move_scores[bstIdx] = move_scores[i];
+		scoreList[bstIdx] = scoreList[i];
 		moves[bstIdx] = moves[i];
 		Position npos = *pos;
 		if (!MakeMove(&npos, &move))
@@ -772,8 +783,10 @@ static S16 SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 				PrintInfo(pos, depth, score);
 			if (alpha >= beta) {
 				tt_flag = UPPER;
-				if (move.promo == PT_NB && PieceTypeOn(pos, move.to) == PT_NB)
-					stack[ply].killer = move;
+				if (move.promo == PT_NB && PieceTypeOnSquare(pos, move.to) == PT_NB && !Equal(move, stack[ply].killer1)) {
+					stack[ply].killer2 = stack[ply].killer1;
+					stack[ply].killer1 = move;
+				}
 				break;
 			}
 		}
@@ -792,7 +805,7 @@ static S16 SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, S
 }
 
 static void SearchIteratively(Position* pos) {
-	memset(tt, 0, sizeof(tt));
+	TTClear();
 	int score = 0;
 	int alpha = -MATE;
 	int beta = MATE;
@@ -910,10 +923,6 @@ static void UciBench(Position* pos) {
 	PrintSummary(elapsed, info.nodes);
 }
 
-static void UciNewGame() {
-	memset(tt, 0, sizeof(tt));
-}
-
 static void ParsePosition(Position* pos, char* ptr) {
 	char token[80], fen[80];
 	ptr = ParseToken(ptr, token);
@@ -939,7 +948,7 @@ static void ParsePosition(Position* pos, char* ptr) {
 			if (*token == '\0')
 				break;
 			Move m = UciToMove(token, pos->flipped);
-			if (PieceTypeOn(pos, m.to) != PT_NB || PieceTypeOn(pos, m.from) == PAWN)
+			if (PieceTypeOnSquare(pos, m.to) != PT_NB || PieceTypeOnSquare(pos, m.from) == PAWN)
 				historyCount = 0;
 			historyHash[historyCount++] = GetHash(pos);
 			MakeMove(pos, &m);
@@ -974,7 +983,7 @@ static void ParseGo(Position* pos, char* command) {
 	int time = pos->flipped ? btime : wtime;
 	int inc = pos->flipped ? binc : winc;
 	if (time)
-		info.timeLimit = min(time / movestogo + inc, time / 2);
+		info.timeLimit = max(1,min(time / movestogo + inc, time / 2));
 	SearchIteratively(pos);
 }
 
