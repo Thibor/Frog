@@ -593,8 +593,8 @@ static int EvalPosition(Position* pos) {
 	U64 bbControlB = bbControl[BLACK][0] & ~bbControl[WHITE][0];
 	bbControlW |= (bbControl[WHITE][1] & ~bbControl[BLACK][1] & ~bbControl[BLACK][0]);
 	bbControlB |= (bbControl[BLACK][1] & ~bbControl[WHITE][1] & ~bbControl[WHITE][0]);
-	bbControlW |= (bbControl[WHITE][2] & ~bbControl[BLACK][2] & ~bbControl[BLACK][1] && ~bbControl[BLACK][0]);
-	bbControlB |= (bbControl[BLACK][2] & ~bbControl[WHITE][2] & ~bbControl[WHITE][1] && ~bbControl[WHITE][0]);
+	bbControlW |= (bbControl[WHITE][2] & ~bbControl[BLACK][2] & ~bbControl[BLACK][1] & ~bbControl[BLACK][0]);
+	bbControlB |= (bbControl[BLACK][2] & ~bbControl[WHITE][2] & ~bbControl[WHITE][1] & ~bbControl[WHITE][0]);
 	score += Count(bbControlW) - Count(bbControlB);
 	score += Count(bbControlW & bbCenter1) - Count(bbControlB & bbCenter1);
 	score += Count(bbControlW & bbCenter2) - Count(bbControlB & bbCenter2);
