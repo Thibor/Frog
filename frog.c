@@ -575,7 +575,7 @@ static int EvalPosition(Position* pos) {
 		bbStart0 = pos->color[0] & pos->pieces[KING];
 		U64 file0 = bbFiles[FileOf(LSB(bbStart0))];
 		file0 |= East(file0) | West(file0);
-		bbAttack0 = file0 & (bbRanks[1] | bbRanks[2]) & ~(bbFiles[3] | bbFiles[4]);
+		bbAttack0 = file0 & (bbRanks[1] | bbRanks[2]) & ~(FILE_D | FILE_E);
 		bbAttack0 &= (pos->color[0] & pos->pieces[PAWN]);
 		score += Count(bbAttack0);
 		score += Count(bbAttack0 & bbRanks[1]);
@@ -586,7 +586,7 @@ static int EvalPosition(Position* pos) {
 	bbControl[BLACK][0] = SW(pos->color[BLACK] & pos->pieces[PAWN]) | SE(pos->color[BLACK] & pos->pieces[PAWN]);
 	for (int c = WHITE; c < COLOR_NB; c++) {
 		bbControl[c][1] = KnightAttackBB(pos->color[c] & pos->pieces[KNIGHT]);
-		bbControl[c][1] += BishopAttackBB(pos->color[c] & pos->pieces[BISHOP], bbBlockers);
+		bbControl[c][1] |= BishopAttackBB(pos->color[c] & pos->pieces[BISHOP], bbBlockers);
 		bbControl[c][2] = RookAttackBB(pos->color[c] & pos->pieces[ROOK], bbBlockers);
 	}
 	U64 bbControlW = bbControl[WHITE][0] & ~bbControl[BLACK][0];
